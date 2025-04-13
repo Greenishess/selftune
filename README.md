@@ -6,4 +6,4 @@ python3 -m pip install git+https://github.com/dolfies/discord.py-self@renamed#eg
 # Windows
 py -3 -m pip install git+https://github.com/dolfies/discord.py-self@renamed#egg=selfcord.py[voice]
 ```
-then, just `pip install -r requirements.txt` then you should be ready to run it
+then, just `pip install yt-dlp` then you should be ready to run it
