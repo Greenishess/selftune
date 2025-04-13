@@ -38,7 +38,7 @@ def useconfig():
 
 if os.path.exists(os.path.expanduser("~/.selftune/config.txt")):
     useconfig()
-if bool(token) or bool(ffmpeg_executable) is False:
+if not token or not ffmpeg_executable:
     makeconfig()
 
 
