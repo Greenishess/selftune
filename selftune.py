@@ -61,8 +61,10 @@ ydl_opts = {
 }
 music_playing = False
 loop = False
+loopq = False
 global music_queue
 music_queue = {}
+loopq_to_play = 1
 
 
 async def download_video(url, ydl_opts):
@@ -82,9 +84,7 @@ def get_current_voice_channel(client):
 
 def reducequeue(queue):
     global music_queue
-    for song in music_queue:
-        shifted_queue = {key - 1: value for key, value in music_queue.items()}
-        music_queue = shifted_queue
+    music_queue = {i+1: song for i, song in enumerate(music_queue.values())}
 
 class MyClient(selfcord.Client):
     def __init__(self):
@@ -97,10 +97,12 @@ class MyClient(selfcord.Client):
     async def on_message(self, message):
         global loop
         global music_queue
+        global loopq_to_play
+        global loopq
         if message.content == "$help":
             print(f"help command invoked by {message.author.name} ({message.author.id})")
             help_message = (
-                "Version: **1.0.1**\n"
+                "Version: **1.4.0**\n"
                 "Commands:\n"
                 "**$ping** - Check the bot's latency\n"
                 "**$play <youtube url>** - Play a song from YouTube\n"
@@ -109,6 +111,10 @@ class MyClient(selfcord.Client):
                 "**$viewq** - Alias for $viewqueue\n"
                 "**$loop** - Loop the current song\n"
                 "**$skip** - Skip the current song\n"
+                "**$loopqueue** - Loops the queue\n"
+                "**$loopq** - Alias for $loopqueue"
+                "**$clearqueue** - Clears the queue\n"
+                "**$clearq** - Alias for $clearqueue"
             )
             await message.channel.send(help_message, silent=True)
         
@@ -121,7 +127,7 @@ class MyClient(selfcord.Client):
         
         
         
-        elif message.content.startswith("$echo in channelID {message.channel.id}"):
+        elif message.content.startswith("$echo"):
             print(f"echo command invoked by {message.author.name} ({message.author.id})")
             args = message.content[6:]
             if args.strip() == "":
@@ -169,8 +175,15 @@ class MyClient(selfcord.Client):
                         args = args.strip().split("<")[1].split(">")[0]
                     if not self.current_voice.is_playing():
                         await message.channel.send("**Downloading, please wait...**", silent=True)
+                    if self.current_voice.is_playing():
+                        confirmation_message = await message.channel.send("**Adding to the queue...**", silent=True)
                     filename = await download_video(args.strip(), ydl_opts)
                     self.current_voice.play(selfcord.FFmpegPCMAudio(executable=ffmpeg_executable, source=filename))
+
+                    if loopq == True:
+                        if not music_queue:
+                            music_queue.update({1: filename})
+
                     await message.channel.send(f"Playing: **{filename}**", silent=True)
                     while 1:
                         await asyncio.sleep(1)
@@ -180,12 +193,22 @@ class MyClient(selfcord.Client):
                         else:
                             if not self.current_voice.is_playing():
                                 if music_queue:
-                                    position = min(music_queue)
-                                    filename = music_queue[position]
+                                    if loopq == False:
+                                        position = min(music_queue)
+                                        filename = music_queue[position]
+                                    if loopq == True:
+                                        try:
+                                            filename = music_queue[loopq_to_play]
+                                            loopq_to_play = loopq_to_play + 1
+                                        except Exception as e:
+                                            loopq_to_play = 1
+                                            filename = music_queue[loopq_to_play]
                                     self.current_voice.play(selfcord.FFmpegPCMAudio(executable=ffmpeg_executable, source=filename))
-                                    del music_queue[position]
+                                    if loopq == False:
+                                        del music_queue[position]
                                     if music_queue:
-                                        reducequeue(queue=music_queue)
+                                        if loopq == False:
+                                            reducequeue(queue=music_queue)
                                 else:
                                     return
                 except selfcord.errors.ClientException: #i was gonna use the music_playing variable to keep track if music is playing but i might just use this exception now instead
@@ -194,7 +217,7 @@ class MyClient(selfcord.Client):
                         music_queue.update({position: filename})
                     else:
                         music_queue.update({1: filename})
-                    await message.channel.send(f"Added **{filename}** to queue", silent=True)
+                    await confirmation_message.edit(content=f"Added **{filename}** to the queue")
                 except AttributeError:
                     pass #if you do $stop while a song is playing, it will send this error, so i just pass it since it doesn't matter
                 except Exception as e:
@@ -215,13 +238,13 @@ class MyClient(selfcord.Client):
 
         elif message.content == "$viewqueue":
             print(f"viewqueue command invoked by {message.author.name} ({message.author.id}) in channelID {message.channel.id}")
-            await message.channel.send(music_queue)
+            await message.channel.send(music_queue, silent=True)
 
 
 
         elif message.content == "$viewq":
             print(f"viewq command invoked by {message.author.name} ({message.author.id}) in channelID {message.channel.id}")
-            await message.channel.send(music_queue)
+            await message.channel.send(music_queue, silent=True)
 
         
         
@@ -235,10 +258,42 @@ class MyClient(selfcord.Client):
                 await message.channel.send("Stopped looping the current song", silent=True)
 
 
+
+        elif message.content == "$loopq":
+            print(f"loopq command invoked by {message.author.name} ({message.author.id}) in channelID {message.channel.id}")
+            if loopq == False:
+                loopq = True
+                await message.channel.send("Looping the current queue", silent=True)
+            else:
+                loopq = False
+                await message.channel.send("Stopped looping the current queue", silent=True)
+
+
+        elif message.content == "$loopqueue":
+            print(f"loopq command invoked by {message.author.name} ({message.author.id}) in channelID {message.channel.id}")
+            if loopq == False:
+                loopq = True
+                await message.channel.send("Looping the current queue", silent=True)
+            else:
+                loopq = False
+                await message.channel.send("Stopped looping the current queue", silent=True)
+
+
+
         elif message.content == "$skip":
             print(f"skip command invoked by {message.author.name} ({message.author.id}) in channelID {message.channel.id}")
             if self.current_voice is not None:
                 if music_queue:
+                    if loopq:
+                        loopq_to_play += 1
+                        if loopq_to_play > len(music_queue):
+                            loopq_to_play = 1
+                        filename = music_queue[loopq_to_play]
+                        self.current_voice.stop()
+                        await message.channel.send(f"Skipped to **{filename}**", silent=True)
+                        self.current_voice.play(selfcord.FFmpegPCMAudio(executable=ffmpeg_executable, source=filename))
+                else:
+                    # Regular queue skip
                     position = min(music_queue)
                     filename = music_queue[position]
                     self.current_voice.stop()
@@ -247,8 +302,22 @@ class MyClient(selfcord.Client):
                     del music_queue[position]
                     if music_queue:
                         reducequeue(queue=music_queue)
-                else:
-                    await message.channel.send("No songs in queue", silent=True)
+            else:
+                await message.channel.send("No songs in queue", silent=True)
+
+
+
+        elif message.content == "$clearqueue":
+            print(f"clearqueue command invoked by {message.author.name} ({message.author.id}) in channelID {message.channel.id}")
+            music_queue = {}
+            await message.channel.send("**Cleared the queue**", silent=True)
+
+
+
+        elif message.content == "$clearq":
+            print(f"clearq command invoked by {message.author.name} ({message.author.id}) in channelID {message.channel.id}")
+            music_queue = {}
+            await message.channel.send("**Cleared the queue**", silent=True)
 
 
 client = MyClient()
