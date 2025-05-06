@@ -3,12 +3,16 @@ import os
 import yt_dlp
 import asyncio
 import subprocess
+import colorama
+import uuid
+import glob
+import shutil
+colorama.just_fix_windows_console()
 
 token = ""
 ffmpeg_executable = r""
 
-
-try: #detect if ffmpeg is installed to path and use that ffmpeg. if it's not, we're gonna ask the user for their ffmpeg path.
+try:
     ffmpeg_detected = subprocess.run("ffmpeg", shell=False, capture_output=True, text=True)
     ffmpeg_detected = True
     ffmpeg_executable = "ffmpeg"
@@ -22,7 +26,7 @@ def makeconfig():
     if not bool(token):
         token = input("Please paste your user token here: ")
     if not ffmpeg_detected:
-        ffmpeg_executable = input("ffmpeg not found. If it is installed, please paste the file path of ffmpeg here: ")
+        ffmpeg_executable = input("ffmpeg not found. If it is installed, please paste the file path of ffmpeg here: ") #this doesnt matter because yt_dlp uses ffmpeg and for yt_dlp it must be in PATH. too lazy to remove so its staying
     if not os.path.exists(os.path.expanduser("~/.selftune/config.txt")):
         with open(os.path.expanduser("~/.selftune/config.txt"), "w") as file:
             file.write(f"{token}\n")
@@ -33,32 +37,28 @@ def useconfig():
     global ffmpeg_executable
     with open(os.path.expanduser("~/.selftune/config.txt"), "r") as file:
         lines = file.readlines()
-        token = lines[0]
-        ffmpeg_executable = lines[1]
+        token = lines[0].strip()
+        ffmpeg_executable = lines[1].strip()
 
 if os.path.exists(os.path.expanduser("~/.selftune/config.txt")):
     useconfig()
 if not token or not ffmpeg_executable:
     makeconfig()
 
-
-
 if not os.path.exists(os.path.expanduser("~/.selftune")):
     os.makedirs(os.path.expanduser("~/.selftune"))
 os.chdir(os.path.expanduser("~/.selftune"))
-
-
-
 
 ydl_opts = {
     'format': 'm4a/bestaudio/best',
     'quiet': True,
     'no_warnings': True,
-    'postprocessors': [{  # Extract audio using ffmpeg
+    'postprocessors': [{
         'key': 'FFmpegExtractAudio',
         'preferredcodec': 'mp3'
     }]
 }
+
 music_playing = False
 loop = False
 loopq = False
@@ -66,16 +66,61 @@ global music_queue
 music_queue = {}
 loopq_to_play = 1
 
-
 async def download_video(url, ydl_opts):
     def _download():
+        unique_id = str(uuid.uuid4())[:8]  # generate a short unique id
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info_dict = ydl.extract_info(url, download=False)
             filename = ydl.prepare_filename(info_dict)
+            #filename = filename.rsplit('.', 1)[0] + f"_{unique_id}.mp3"
             filename = filename.rsplit('.', 1)[0] + '.mp3'
             ydl.download([url])
             return filename
     return await asyncio.to_thread(_download)
+
+
+def get_first_playlist_item_link(playlist_url):
+    playlist_opts = {
+        'playlist_items': '1',
+        'extract_flat': True,
+        'skip_download': True,
+        'quiet': True,
+        'no_warnings': True,
+    }
+    with yt_dlp.YoutubeDL(playlist_opts) as ydl:
+        info = ydl.extract_info(playlist_url, download=False)
+        if info and 'entries' in info and len(info['entries']) > 0:
+            return info['entries'][0].get('url')
+        else:
+            return None
+
+async def download_playlist(url, ydl_opts, rest=bool):
+    async def _downloadplaylist():
+        if rest == False:
+            return await download_video(get_first_playlist_item_link(url), ydl_opts)
+        else:
+            playlist_opts = {
+                'extract_flat': True,
+                'skip_download': True,
+                'quiet': True,
+                'no_warnings': True,
+            }
+            with yt_dlp.YoutubeDL(playlist_opts) as ydl:
+                info = ydl.extract_info(url, download=False)
+                filenames = []
+                if info and 'entries' in info:
+                    for entry in info['entries']:
+                        video_url = entry.get('url')
+                        if video_url:
+                            filename = await download_video(video_url, ydl_opts)
+                            filenames.append(filename)
+                return filenames
+    return await _downloadplaylist()
+
+
+
+def log_command(command, username, userid, channelid):
+    print(colorama.Fore.LIGHTBLUE_EX + command + colorama.Fore.YELLOW + " command invoked by " + colorama.Fore.GREEN + username + " (" + userid + ") " + colorama.Fore.YELLOW + "in channelID " + colorama.Fore.GREEN + channelid + colorama.Fore.RESET)
 
 def get_current_voice_channel(client):
     if client.voice_clients and len(client.voice_clients) > 0:
@@ -86,6 +131,11 @@ def reducequeue(queue):
     global music_queue
     music_queue = {i+1: song for i, song in enumerate(music_queue.values())}
 
+def add_playlist_to_queue(filename):
+    global music_queue
+    position = max(music_queue) + 1 if music_queue else 1
+    music_queue[position] = filename
+
 class MyClient(selfcord.Client):
     def __init__(self):
         super().__init__()
@@ -93,195 +143,205 @@ class MyClient(selfcord.Client):
         
     async def on_ready(self):
         print('Logged on as', self.user)
+        await self.change_presence(activity=selfcord.Activity(type=selfcord.ActivityType.playing, name="type $help for music"))
+    
+    async def download_and_queue_rest(self, url, ydl_opts):
+        try:
+            if not os.path.exists(os.path.expanduser("~/.selftune/playlist")):
+                os.mkdir(os.path.expanduser("~/.selftune/playlist"))
+            os.chdir(os.path.expanduser("~/.selftune/playlist"))
+            
+            #delete all prior songs
+            for filename in glob.glob(os.path.join(os.path.expanduser("~/.selftune/playlist"), "*.mp3")):
+                if os.path.isfile(filename):
+                    os.remove(filename)
+            
+            #download the songs in this folder to prevent exceptions of the first song in use
+            filenames = await download_playlist(url, ydl_opts, rest=True)
+            for fn in filenames:
+                add_playlist_to_queue(fn)
+            
+            #move the songs back to the original folder
+            try:
+                for filename in os.listdir(os.path.expanduser("~/.selftune/playlist")):
+                    #not gonna use shutil or os because its bad at overwriting files
+                    #just realized this is a useless for loop because i was originally gonna use shutil and that needed a for loop but xcopy and cp doesnt need one and i needa stop yappng oh my gyat rizz
+                    if os.name == "nt":
+                        os.system("xcopy /s /y * ..\\")
+                    if os.name == "posix":
+                        os.system("cp * ../")
+
+            except PermissionError as e:
+                pass
+            os.chdir(os.path.expanduser("~/.selftune/"))
+        except Exception as e:
+            print("Error downloading rest of playlist:", e)
+            os.chdir(os.path.expanduser("~/.selftune/"))
 
     async def on_message(self, message):
         global loop
         global music_queue
         global loopq_to_play
         global loopq
+
         if message.content == "$help":
-            print(f"help command invoked by {message.author.name} ({message.author.id})")
+            log_command("$help", message.author.name, str(message.author.id), str(message.channel.id))
             help_message = (
-                "Version: **1.4.0**\n"
+                "[Selftune by Greenishes](<https://github.com/Greenishess/selftune>)\n"
+                "Version: **3.0.0**\n"
                 "Commands:\n"
                 "**$ping** - Check the bot's latency\n"
-                "**$play <youtube url>** - Play a song from YouTube\n"
+                "**$play <youtube video or playlist url>** - Play a song or playlist from YouTube (playlist functionality is in beta, dont count on it working)\n"
                 "**$stop** - Stop playing and disconnect from the voice channel\n"
                 "**$viewqueue** - View the current queue\n"
                 "**$viewq** - Alias for $viewqueue\n"
                 "**$loop** - Loop the current song\n"
                 "**$skip** - Skip the current song\n"
                 "**$loopqueue** - Loops the queue\n"
-                "**$loopq** - Alias for $loopqueue"
+                "**$loopq** - Alias for $loopqueue\n"
                 "**$clearqueue** - Clears the queue\n"
                 "**$clearq** - Alias for $clearqueue"
             )
             await message.channel.send(help_message, silent=True)
-        
-        
-        
-        if message.content == '$ping':
-            print(f"ping command invoked by {message.author.name} ({message.author.id}) in channelID {message.channel.id}")
+
+        elif message.content == '$ping':
+            log_command("$ping", message.author.name, str(message.author.id), str(message.channel.id))
             await message.channel.send('Pong! (' + str(self.latency * 1000) + "ms)")
-        
-        
-        
-        
+
         elif message.content.startswith("$echo"):
-            print(f"echo command invoked by {message.author.name} ({message.author.id})")
+            log_command("$echo", message.author.name, str(message.author.id), str(message.channel.id))
             args = message.content[6:]
             if args.strip() == "":
                 await message.channel.send("You didn't say anything to echo...")
             else:
                 await message.channel.send(args.strip())
-                #made this to test command arguments
-                
-        
-        
-        
+
         elif message.content.startswith("$play"):
-            print(f"play command invoked by {message.author.name} ({message.author.id}) in channelID {message.channel.id}")
+            log_command("$play", message.author.name, str(message.author.id), str(message.channel.id))
             args = message.content[6:]
             channel = message.author.voice.channel if message.author.voice else None
-            
             if channel is None:
                 return
-            
+
             current_channel = get_current_voice_channel(self)
             voice_connection = None
-            
+
             if current_channel is not None:
                 if current_channel == channel:
                     voice_connection = self.voice_clients[0]
                 else:
                     await self.voice_clients[0].disconnect()
-                    voice_connection = await channel.connect(ring=False)
+                    try:
+                        voice_connection = await channel.connect(ring=False)
+                    except TypeError:
+                        voice_connection = await channel.connect()
             else:
                 try:
-                    voice_connection = await channel.connect(ring=False)
+                    try:
+                        voice_connection = await channel.connect(ring=False)
+                    except TypeError:
+                        voice_connection = await channel.connect()
                 except selfcord.ClientException:
                     if message.guild.voice_client:
                         await message.guild.voice_client.disconnect()
-                    voice_connection = await channel.connect(ring=False)
-            
-            #store the current voice connection
+                    try:
+                        voice_connection = await channel.connect(ring=False)
+                    except TypeError:
+                        voice_connection = await channel.connect()
+
             self.current_voice = voice_connection
-                    
+
             if args.strip() == "":
                 await message.channel.send("Usage: **$play <youtube url>**")
-            else:
-                try:
-                    if "<" and ">" in args.strip():
-                        args = args.strip().split("<")[1].split(">")[0]
-                    if not self.current_voice.is_playing():
-                        await message.channel.send("**Downloading, please wait...**", silent=True)
-                    if self.current_voice.is_playing():
-                        confirmation_message = await message.channel.send("**Adding to the queue...**", silent=True)
+                return
+
+            try:
+                if "<" in args and ">" in args:
+                    args = args.strip().split("<")[1].split(">")[0]
+
+                if not self.current_voice.is_playing():
+                    await message.channel.send("**Downloading, please wait...**", silent=True)
+                else:
+                    addingmsg = await message.channel.send("**Adding...**", silent=True)
+
+                is_playlist = "playlist" in args or "list=" in args
+
+                if is_playlist:
+                    #if its a playlist, download the first song then play it, and download the rest of the songs in the playlist while the song is playing
+                    filename = await download_playlist(args.strip(), ydl_opts, rest=False)
+
+                else:
                     filename = await download_video(args.strip(), ydl_opts)
+
+                try:
                     self.current_voice.play(selfcord.FFmpegPCMAudio(executable=ffmpeg_executable, source=filename))
-
-                    if loopq == True:
-                        if not music_queue:
-                            music_queue.update({1: filename})
-
                     await message.channel.send(f"Playing: **{filename}**", silent=True)
+                    if is_playlist:
+                        asyncio.create_task(self.download_and_queue_rest(args.strip(), ydl_opts))
+
+                    if loopq and not music_queue:
+                        music_queue[1] = filename
+
                     while 1:
                         await asyncio.sleep(1)
-                        if loop == True:
+                        if loop:
                             if not self.current_voice.is_playing():
                                 self.current_voice.play(selfcord.FFmpegPCMAudio(executable=ffmpeg_executable, source=filename))
                         else:
                             if not self.current_voice.is_playing():
                                 if music_queue:
-                                    if loopq == False:
+                                    if not loopq:
                                         position = min(music_queue)
                                         filename = music_queue[position]
-                                    if loopq == True:
+                                    else:
                                         try:
                                             filename = music_queue[loopq_to_play]
-                                            loopq_to_play = loopq_to_play + 1
-                                        except Exception as e:
+                                            loopq_to_play += 1
+                                        except:
                                             loopq_to_play = 1
                                             filename = music_queue[loopq_to_play]
+
                                     self.current_voice.play(selfcord.FFmpegPCMAudio(executable=ffmpeg_executable, source=filename))
-                                    if loopq == False:
+                                    if not loopq:
                                         del music_queue[position]
-                                    if music_queue:
-                                        if loopq == False:
-                                            reducequeue(queue=music_queue)
+                                        reducequeue(music_queue)
                                 else:
                                     return
-                except selfcord.errors.ClientException: #i was gonna use the music_playing variable to keep track if music is playing but i might just use this exception now instead
-                    if music_queue:
-                        position = max(music_queue) + 1
-                        music_queue.update({position: filename})
+                except selfcord.errors.ClientException:
+                    position = max(music_queue) + 1 if music_queue else 1
+                    music_queue[position] = filename
+                    if addingmsg:
+                        await addingmsg.edit(f"**Added to queue:** {filename}")
                     else:
-                        music_queue.update({1: filename})
-                    await confirmation_message.edit(content=f"Added **{filename}** to the queue")
-                except AttributeError:
-                    pass #if you do $stop while a song is playing, it will send this error, so i just pass it since it doesn't matter
-                except Exception as e:
-                    await message.channel.send(f"**Error downloading:** {e}")
+                        await message.channel.send(f"**Added to queue:** {filename}", silent=True)
 
-
+            except Exception as e:
+                await message.channel.send(f"**Error:** {e}", silent=True)
 
         elif message.content == "$stop":
-            print(f"stop command invoked by {message.author.name} ({message.author.id}) in channelID {message.channel.id}")
+            log_command("$stop", message.author.name, str(message.author.id), str(message.channel.id))
             if self.current_voice is not None:
                 await self.current_voice.disconnect()
                 self.current_voice = None
-                await message.channel.send("Disconected", silent=True)
-            else:
-                pass
-        
+                await message.channel.send("Disconnected", silent=True)
+                music_queue = {}
 
-
-        elif message.content == "$viewqueue":
-            print(f"viewqueue command invoked by {message.author.name} ({message.author.id}) in channelID {message.channel.id}")
+        elif message.content in ["$viewqueue", "$viewq"]:
+            log_command("$viewqueue", message.author.name, str(message.author.id), str(message.channel.id))
             await message.channel.send(music_queue, silent=True)
 
-
-
-        elif message.content == "$viewq":
-            print(f"viewq command invoked by {message.author.name} ({message.author.id}) in channelID {message.channel.id}")
-            await message.channel.send(music_queue, silent=True)
-
-        
-        
         elif message.content == "$loop":
-            print(f"loop command invoked by {message.author.name} ({message.author.id}) in channelID {message.channel.id}")
-            if loop == False:
-                loop = True
-                await message.channel.send("Looping the current song", silent=True)
-            else:
-                loop = False
-                await message.channel.send("Stopped looping the current song", silent=True)
+            log_command("$loop", message.author.name, str(message.author.id), str(message.channel.id))
+            loop = not loop
+            await message.channel.send("Looping the current song" if loop else "Stopped looping the current song", silent=True)
 
-
-
-        elif message.content == "$loopq":
-            print(f"loopq command invoked by {message.author.name} ({message.author.id}) in channelID {message.channel.id}")
-            if loopq == False:
-                loopq = True
-                await message.channel.send("Looping the current queue", silent=True)
-            else:
-                loopq = False
-                await message.channel.send("Stopped looping the current queue", silent=True)
-
-
-        elif message.content == "$loopqueue":
-            print(f"loopq command invoked by {message.author.name} ({message.author.id}) in channelID {message.channel.id}")
-            if loopq == False:
-                loopq = True
-                await message.channel.send("Looping the current queue", silent=True)
-            else:
-                loopq = False
-                await message.channel.send("Stopped looping the current queue", silent=True)
-
-
+        elif message.content in ["$loopq", "$loopqueue"]:
+            log_command("$loopqueue", message.author.name, str(message.author.id), str(message.channel.id))
+            loopq = not loopq
+            await message.channel.send("Looping the current queue" if loopq else "Stopped looping the current queue", silent=True)
 
         elif message.content == "$skip":
-            print(f"skip command invoked by {message.author.name} ({message.author.id}) in channelID {message.channel.id}")
+            log_command("$skip", message.author.name, str(message.author.id), str(message.channel.id))
             if self.current_voice is not None:
                 if music_queue:
                     if loopq:
@@ -292,33 +352,22 @@ class MyClient(selfcord.Client):
                         self.current_voice.stop()
                         await message.channel.send(f"Skipped to **{filename}**", silent=True)
                         self.current_voice.play(selfcord.FFmpegPCMAudio(executable=ffmpeg_executable, source=filename))
+                    else:
+                        position = min(music_queue)
+                        filename = music_queue[position]
+                        self.current_voice.stop()
+                        await message.channel.send(f"Skipped to **{filename}**", silent=True)
+                        self.current_voice.play(selfcord.FFmpegPCMAudio(executable=ffmpeg_executable, source=filename))
+                        del music_queue[position]
+                        if music_queue:
+                            reducequeue(queue=music_queue)
                 else:
-                    # Regular queue skip
-                    position = min(music_queue)
-                    filename = music_queue[position]
-                    self.current_voice.stop()
-                    await message.channel.send(f"Skipped to **{filename}**", silent=True)
-                    self.current_voice.play(selfcord.FFmpegPCMAudio(executable=ffmpeg_executable, source=filename))
-                    del music_queue[position]
-                    if music_queue:
-                        reducequeue(queue=music_queue)
-            else:
-                await message.channel.send("No songs in queue", silent=True)
+                    await message.channel.send("No songs in queue", silent=True)
 
-
-
-        elif message.content == "$clearqueue":
-            print(f"clearqueue command invoked by {message.author.name} ({message.author.id}) in channelID {message.channel.id}")
+        elif message.content in ["$clearqueue", "$clearq"]:
+            log_command("$clearqueue", message.author.name, str(message.author.id), str(message.channel.id))
             music_queue = {}
             await message.channel.send("**Cleared the queue**", silent=True)
-
-
-
-        elif message.content == "$clearq":
-            print(f"clearq command invoked by {message.author.name} ({message.author.id}) in channelID {message.channel.id}")
-            music_queue = {}
-            await message.channel.send("**Cleared the queue**", silent=True)
-
 
 client = MyClient()
 client.run(token)
