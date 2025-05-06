@@ -168,8 +168,10 @@ class MyClient(selfcord.Client):
                     #just realized this is a useless for loop because i was originally gonna use shutil and that needed a for loop but xcopy and cp doesnt need one and i needa stop yappng oh my gyat rizz
                     if os.name == "nt":
                         os.system("xcopy /s /y * ..\\")
+                        break
                     if os.name == "posix":
                         os.system("cp * ../")
+                        break
 
             except PermissionError as e:
                 pass
