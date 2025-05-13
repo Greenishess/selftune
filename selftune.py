@@ -4,9 +4,7 @@ import yt_dlp
 import asyncio
 import subprocess
 import colorama
-import uuid
 import glob
-import shutil
 colorama.just_fix_windows_console()
 
 token = ""
@@ -26,7 +24,7 @@ def makeconfig():
     if not bool(token):
         token = input("Please paste your user token here: ")
     if not ffmpeg_detected:
-        ffmpeg_executable = input("ffmpeg not found. If it is installed, please paste the file path of ffmpeg here: ") #this doesnt matter because yt_dlp uses ffmpeg and for yt_dlp it must be in PATH. too lazy to remove so its staying
+        ffmpeg_executable = input("ffmpeg not found. If it is installed, please paste the file path of ffmpeg here. Also note, yt_dlp may be buggy if ffmpeg is not in path: ") #this doesnt matter because yt_dlp uses ffmpeg and for yt_dlp it must be in PATH. too lazy to remove so its staying
     if not os.path.exists(os.path.expanduser("~/.selftune/config.txt")):
         with open(os.path.expanduser("~/.selftune/config.txt"), "w") as file:
             file.write(f"{token}\n")
@@ -68,11 +66,9 @@ loopq_to_play = 1
 
 async def download_video(url, ydl_opts):
     def _download():
-        unique_id = str(uuid.uuid4())[:8]  # generate a short unique id
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info_dict = ydl.extract_info(url, download=False)
             filename = ydl.prepare_filename(info_dict)
-            #filename = filename.rsplit('.', 1)[0] + f"_{unique_id}.mp3"
             filename = filename.rsplit('.', 1)[0] + '.mp3'
             ydl.download([url])
             return filename
@@ -119,7 +115,7 @@ async def download_playlist(url, ydl_opts, rest=bool):
 
 
 
-def log_command(command, username, userid, channelid):
+def log_command(command: str, username: str, userid: str, channelid: str):
     print(colorama.Fore.LIGHTBLUE_EX + command + colorama.Fore.YELLOW + " command invoked by " + colorama.Fore.GREEN + username + " (" + userid + ") " + colorama.Fore.YELLOW + "in channelID " + colorama.Fore.GREEN + channelid + colorama.Fore.RESET)
 
 def get_current_voice_channel(client):
@@ -156,10 +152,13 @@ class MyClient(selfcord.Client):
                 if os.path.isfile(filename):
                     os.remove(filename)
             
-            #download the songs in this folder to prevent exceptions of the first song in use
+            #download the songs in this folder to prevent exceptions of the first song file in use error
             filenames = await download_playlist(url, ydl_opts, rest=True)
+            dont_queue_first_song = 0
             for fn in filenames:
-                add_playlist_to_queue(fn)
+                dont_queue_first_song = dont_queue_first_song + 1
+                if dont_queue_first_song != 1:
+                    add_playlist_to_queue(fn)
             
             #move the songs back to the original folder
             try:
@@ -177,7 +176,7 @@ class MyClient(selfcord.Client):
                 pass
             os.chdir(os.path.expanduser("~/.selftune/"))
         except Exception as e:
-            print("Error downloading rest of playlist:", e)
+            print("Error downloading rest of playlist:" + str(e))
             os.chdir(os.path.expanduser("~/.selftune/"))
 
     async def on_message(self, message):
@@ -189,8 +188,8 @@ class MyClient(selfcord.Client):
         if message.content == "$help":
             log_command("$help", message.author.name, str(message.author.id), str(message.channel.id))
             help_message = (
-                "[Selftune by Greenishes](<https://github.com/Greenishess/selftune>)\n"
-                "Version: **3.0.0**\n"
+                "[SelfTune by Greenishes](<https://github.com/Greenishess/selftune>)\n"
+                "Version: **3.1.0**\n"
                 "Commands:\n"
                 "**$ping** - Check the bot's latency\n"
                 "**$play <youtube video or playlist url>** - Play a song or playlist from YouTube (playlist functionality is in beta, dont count on it working)\n"
@@ -202,7 +201,9 @@ class MyClient(selfcord.Client):
                 "**$loopqueue** - Loops the queue\n"
                 "**$loopq** - Alias for $loopqueue\n"
                 "**$clearqueue** - Clears the queue\n"
-                "**$clearq** - Alias for $clearqueue"
+                "**$clearq** - Alias for $clearqueue\n"
+                f"Status: Loop: {loop} Loop queue: {loopq} Posistion in queue: {loopq_to_play}"
+
             )
             await message.channel.send(help_message, silent=True)
 
@@ -313,24 +314,45 @@ class MyClient(selfcord.Client):
                     position = max(music_queue) + 1 if music_queue else 1
                     music_queue[position] = filename
                     if addingmsg:
-                        await addingmsg.edit(f"**Added to queue:** {filename}")
+                        try:
+                            await addingmsg.edit(f"**Added to queue:** {filename}")
+                        except UnboundLocalError as e:
+                            pass #for some reason if addingmsg doesnt work to check if addingmsg has value to it, and if it doesnt have value a harmless error will be sent
                     else:
                         await message.channel.send(f"**Added to queue:** {filename}", silent=True)
+
+            except AttributeError as e:
+                pass #prevents nonetype harmless error from being sent
 
             except Exception as e:
                 await message.channel.send(f"**Error:** {e}", silent=True)
 
         elif message.content == "$stop":
             log_command("$stop", message.author.name, str(message.author.id), str(message.channel.id))
-            if self.current_voice is not None:
-                await self.current_voice.disconnect()
-                self.current_voice = None
-                await message.channel.send("Disconnected", silent=True)
-                music_queue = {}
+            try:
+                if self.current_voice is not None:
+                    await self.current_voice.disconnect()
+                    self.current_voice = None
+                    await message.channel.send("Disconnected", silent=True)
+                    music_queue = {}
+            except AttributeError:
+                pass #because we stop playing it before we disconnect, it will send a harmless error saying is_playing is false so we'll pass that
+            except Exception as e:
+                await message.channel.send("**Error:** " + str(e), silent=True)
 
         elif message.content in ["$viewqueue", "$viewq"]:
             log_command("$viewqueue", message.author.name, str(message.author.id), str(message.channel.id))
-            await message.channel.send(music_queue, silent=True)
+            if music_queue:
+                pretty_queue = "\n".join(f"{i}. {name.removesuffix('.mp3')}" for i, name in music_queue.items())
+            else:
+                pretty_queue = "The queue is empty! Try queuing some songs!"
+            try:
+                await message.channel.send(pretty_queue, silent=True)
+            except selfcord.errors.HTTPException:
+                try:
+                    await message.channel.send(music_queue, silent=True)
+                except selfcord.errors.HTTPException:
+                    await message.channel.send("Why is your queue so big? It's **over the maximum amount of characters you can send** in a Discord message!")
 
         elif message.content == "$loop":
             log_command("$loop", message.author.name, str(message.author.id), str(message.channel.id))
@@ -370,6 +392,7 @@ class MyClient(selfcord.Client):
             log_command("$clearqueue", message.author.name, str(message.author.id), str(message.channel.id))
             music_queue = {}
             await message.channel.send("**Cleared the queue**", silent=True)
+
 
 client = MyClient()
 client.run(token)
