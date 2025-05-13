@@ -189,7 +189,7 @@ class MyClient(selfcord.Client):
             log_command("$help", message.author.name, str(message.author.id), str(message.channel.id))
             help_message = (
                 "[SelfTune by Greenishes](<https://github.com/Greenishess/selftune>)\n"
-                "Version: **3.1.0**\n"
+                "Version: **3.2.0**\n"
                 "Commands:\n"
                 "**$ping** - Check the bot's latency\n"
                 "**$play <youtube video or playlist url>** - Play a song or playlist from YouTube (playlist functionality is in beta, dont count on it working)\n"
@@ -202,7 +202,8 @@ class MyClient(selfcord.Client):
                 "**$loopq** - Alias for $loopqueue\n"
                 "**$clearqueue** - Clears the queue\n"
                 "**$clearq** - Alias for $clearqueue\n"
-                f"Status: Loop: {loop} Loop queue: {loopq} Posistion in queue: {loopq_to_play}"
+                "\n"
+                f"**Status:**\n Loop: **{loop}** | Loop queue: **{loopq}** | Posistion in queue: **{loopq_to_play}**"
 
             )
             await message.channel.send(help_message, silent=True)
